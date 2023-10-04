@@ -17,6 +17,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# We overide some parts of this model to enable passing the past_key_values
+# from outside. The following are the main changes:
+# - prepare_inputs_for_generation: This function slices the input based on the value
+#   of the past_key_values.
+#   Before this change, when past_key_values was not None, it only kept the
+#   last input token. This was OK, during the auto-regressive process where we only
+#   processed the next token each time. However, now that we want to initialize the 
+#   process we externalpast_key_values, I changed the function to splice the input
+#   as `input[past_key_values_length:]`.
+# - _prepare_decoder_attention_mask: This function pads the attention mask with 0s.
+#   It takes the `past_key_values_length` and `input_shape` from the previous function 
+#   as inputs and pads the attention mask with 0s for the first `past_key_values_length`.
+#   I didn't need to make any changes here.
+
+
 """ PyTorch LLaMA model."""
 import math
 from typing import List, Optional, Tuple, Union
@@ -359,6 +375,7 @@ class LlamaAttention(nn.Module):
             kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        # [bsz, nh, t, hd]
 
         if past_key_value is not None:
             # reuse k, v, self_attention
@@ -794,6 +811,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    #AMIR this OVERRIDEs: the Setter / Getter for the static input embedding at the beginning of a transformer.
     def get_input_embeddings(self):
         return self.embed_tokens
 
@@ -805,6 +823,12 @@ class LlamaModel(LlamaPreTrainedModel):
         # create causal mask
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         combined_attention_mask = None
+        #AMIR input_shape[-1] + past_key_values_length = the size of the tokens processed so far. 
+        # * For the first token in the auto-regressive generation process - 
+        #   input_shape[-1] == (the input size) and past_key_values_length=0. 
+        # * For the next tokens input_shape[-1] == (1) and past_key_values_length 
+        #   == the already processed tokens (i.e., starts from input size and 
+        #   increments by 1 every time.)
         if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
                 input_shape,
@@ -1085,7 +1109,14 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
         if past_key_values:
-            input_ids = input_ids[:, -1:]
+            #AMIR Before this change, when past_key_values was not None, we only kept the
+            # last input token. This was OK, during the auto-regressive process where we only
+            # processed the next token each time. However, now that we want to initialize the
+            # process we external past_key_values, we want to allow passing past_key_values 
+            # shorter than the input length.
+            # input_ids = input_ids[:, -1:]
+            past_key_values_length = past_key_values[0][0].shape[2]
+            input_ids = input_ids[:, past_key_values_length:]
 
         position_ids = kwargs.get("position_ids", None)
         if attention_mask is not None and position_ids is None:
@@ -1093,7 +1124,9 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
             if past_key_values:
-                position_ids = position_ids[:, -1].unsqueeze(-1)
+                # position_ids = position_ids[:, -1].unsqueeze(-1)
+                past_key_values_length = past_key_values[0][0].shape[2]
+                position_ids = position_ids[:, past_key_values_length:].unsqueeze(-1)
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:

@@ -110,6 +110,7 @@ class GreedySearchDecoderOnlyOutput(ModelOutput):
     scores: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    past_key_values: Any = None
 
 
 @dataclass
@@ -249,6 +250,7 @@ class SampleDecoderOnlyOutput(ModelOutput):
     scores: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    past_key_values: Any = None
 
 
 @dataclass
@@ -1308,6 +1310,7 @@ class GenerationMixin:
         synced_gpus: Optional[bool] = None,
         assistant_model: Optional["PreTrainedModel"] = None,
         streamer: Optional["BaseStreamer"] = None,
+        past_key_values = None, # Can we pass it in kwargs instead?
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
@@ -1613,6 +1616,7 @@ class GenerationMixin:
                 return_dict_in_generate=generation_config.return_dict_in_generate,
                 synced_gpus=synced_gpus,
                 streamer=streamer,
+                past_key_values=past_key_values,
                 **model_kwargs,
             )
 
@@ -1660,6 +1664,7 @@ class GenerationMixin:
                 return_dict_in_generate=generation_config.return_dict_in_generate,
                 synced_gpus=synced_gpus,
                 streamer=streamer,
+                past_key_values=past_key_values,
                 **model_kwargs,
             )
 
@@ -2297,6 +2302,7 @@ class GenerationMixin:
         return_dict_in_generate: Optional[bool] = None,
         synced_gpus: bool = False,
         streamer: Optional["BaseStreamer"] = None,
+        past_key_values = None,
         **model_kwargs,
     ) -> Union[GreedySearchOutput, torch.LongTensor]:
         r"""
@@ -2436,6 +2442,11 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
         this_peer_finished = False  # used by synced_gpus only
+        output_cache = None
+
+        # prepare model inputs
+        if past_key_values is not None:
+            model_kwargs["past_key_values"] = past_key_values
         while True:
             if synced_gpus:
                 # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
@@ -2484,6 +2495,11 @@ class GenerationMixin:
                         else (outputs.hidden_states,)
                     )
 
+                output_cache = outputs.past_key_values
+                # TODO(amirt): ...
+                # if "output_cache" in model_kwargs:
+                #     output_cache = 
+
             # argmax
             next_tokens = torch.argmax(next_tokens_scores, dim=-1)
 
@@ -2497,6 +2513,7 @@ class GenerationMixin:
             input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
+            # AMIRT - Here the past_key_values are updated for next iteration.
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
@@ -2538,6 +2555,7 @@ class GenerationMixin:
                     scores=scores,
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
+                    past_key_values = output_cache
                 )
         else:
             return input_ids
@@ -2557,6 +2575,7 @@ class GenerationMixin:
         return_dict_in_generate: Optional[bool] = None,
         synced_gpus: bool = False,
         streamer: Optional["BaseStreamer"] = None,
+        past_key_values = None,
         **model_kwargs,
     ) -> Union[SampleOutput, torch.LongTensor]:
         r"""
@@ -2715,6 +2734,11 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
         this_peer_finished = False  # used by synced_gpus only
+        output_cache = None
+
+        # prepare model inputs
+        if past_key_values is not None:
+            model_kwargs["past_key_values"] = past_key_values
         # auto-regressive generation
         while True:
             if synced_gpus:
@@ -2764,6 +2788,8 @@ class GenerationMixin:
                         if self.config.is_encoder_decoder
                         else (outputs.hidden_states,)
                     )
+
+                output_cache = outputs.past_key_values
 
             # sample
             probs = nn.functional.softmax(next_token_scores, dim=-1)
@@ -2820,6 +2846,7 @@ class GenerationMixin:
                     scores=scores,
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
+                    past_key_values = output_cache
                 )
         else:
             return input_ids

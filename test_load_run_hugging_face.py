@@ -14,12 +14,17 @@ def slice_pkv(pkv, slice):
         out.append([group[:, :, slice, :] for group in layer])
     return out
 
-model_weights = "TheBloke/Wizard-Vicuna-13B-Uncensored-HF"
+# model_path = "TheBloke/Wizard-Vicuna-13B-Uncensored-HF"
+model_path = "PulsarAI/Luban-Marcoroni-13B-v1"
 
-tokenizer = AutoTokenizer.from_pretrained(model_weights)
-model = LlamaForCausalLM.from_pretrained(
-                model_weights, device_map="auto", quantization_config=BitsAndBytesConfig(
-                    load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16))
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = 'left'
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path, device_map="auto", quantization_config=BitsAndBytesConfig(
+        load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16),
+    pad_token_id=tokenizer.pad_token_id)
 
 generation_config = GenerationConfig(
     temperature=0,
@@ -29,11 +34,14 @@ generation_config = GenerationConfig(
     output_hidden_states=True,
     return_dict_in_generate=True,
     # output_past_key_values=True,
+    pad_token_id=tokenizer.pad_token_id,
 )
 
 prompt = "Hey, are you conscious?"
 input_ids = tokenizer.encode(
     prompt, return_tensors="pt").to(0) #.cuda()
+# Add five padding token (for testing).
+input_ids = torch.concatenate([torch.tensor([[tokenizer.pad_token_id] * 5]).cuda(), input_ids], dim=1)
 
 generation_output = model.generate(
     input_ids=input_ids,
@@ -41,6 +49,7 @@ generation_output = model.generate(
     max_new_tokens=10,
     past_key_values=None,
 )
+print(tokenizer.decode(generation_output.sequences[0]))
 
 # The previous cache, should be at length -1 of the inputs
 # we will be passing to generate. Because next word prediction

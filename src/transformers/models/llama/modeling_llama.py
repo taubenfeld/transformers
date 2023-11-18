@@ -1121,10 +1121,21 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         position_ids = kwargs.get("position_ids", None)
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
+            # AMIRT: create position ids by cumsumming the attention mask.
+            # Padding value are 0, so they will have a cumsum of -1.
+            # later the masked_fill_ replace -1 => 1, not sure why but
+            # it probably doesn't matter, as long as those tokens are masked.
+            # and the unmask tokens have a valid position id.
+
+            # position_ids = attention_mask.long().cumsum(-1) - 1
+            # AMIRT - HACK!!! count padding tokens in the position ids.
+            position_ids = (torch.ones(attention_mask.shape).long().cumsum(-1) - 1).cuda()
+            
             position_ids.masked_fill_(attention_mask == 0, 1)
             if past_key_values:
                 # position_ids = position_ids[:, -1].unsqueeze(-1)
+                # AMIRT - WARNING - if batch size larger than 0, can cause problems
+                # when past_key_values length differ.
                 past_key_values_length = past_key_values[0][0].shape[2]
                 position_ids = position_ids[:, past_key_values_length:].unsqueeze(-1)
 
